@@ -1,8 +1,10 @@
 """
-WinVanish - minimiert mehrere Ziel-Fenster (z.B. Browser + Discord + ein Spiel
-wie Civ 5) auf einmal, mutet den Ton und pausiert das Video, per selbst gewaehlter
+WinVanish - blendet mehrere Ziel-Fenster (z.B. Browser + Discord + ein Spiel wie
+Civ 5) auf einmal komplett aus - nicht nur minimiert, sondern auch aus der
+Taskleiste entfernt - mutet den Ton und pausiert das Video, per selbst gewaehlter
 Taste. Erneutes Druecken macht alles rueckgaengig - jedes Fenster kommt wieder in
-den Zustand (maximiert/normal), in dem es vorher war.
+den Zustand (maximiert/normal), in dem es vorher war. Der tatsaechliche Fenster-
+zustand wird bei jedem Tastendruck neu geprueft, damit nichts "haengen" bleibt.
 
 Alles wird ueber das Tray-Icon (unten rechts bei der Uhr) eingestellt:
 - Taste aendern...              -> gewuenschte Taste/Kombination einfach druecken
@@ -117,12 +119,18 @@ def is_window_maximized(hwnd):
 
 
 def minimize_window(hwnd):
-    """Minimiert ein Fenster robust - auch Vollbild-Spiele (Alt+Tab-Verhalten).
-    Merkt sich vorher, ob es maximiert war, damit restore_window es korrekt
-    wiederherstellen kann."""
+    """Minimiert ein Fenster robust - auch Vollbild-Spiele (Alt+Tab-Verhalten) -
+    und entfernt zusaetzlich dessen Button aus der Taskleiste, damit wirklich
+    nichts mehr von dem Programm zu sehen ist. Merkt sich vorher, ob es
+    maximiert war und welchen Taskleisten-Stil es hatte, damit restore_window
+    es korrekt wiederherstellen kann."""
     if not hwnd or not win32gui.IsWindow(hwnd):
         return None
     was_maximized = is_window_maximized(hwnd)
+    try:
+        original_exstyle = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+    except Exception:
+        original_exstyle = None
     try:
         win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
     except Exception:
@@ -136,13 +144,33 @@ def minimize_window(hwnd):
             win32gui.ShowWindow(hwnd, win32con.SW_FORCEMINIMIZE)
     except Exception:
         pass
-    return (hwnd, was_maximized)
+    # Taskleisten-Button entfernen: WS_EX_TOOLWINDOW setzen / WS_EX_APPWINDOW
+    # entfernen. Windows aktualisiert die Taskleiste dafuer nur zuverlaessig,
+    # wenn das Fenster kurz komplett versteckt und danach neu gezeigt wird.
+    if original_exstyle is not None:
+        try:
+            win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
+            new_exstyle = (original_exstyle | win32con.WS_EX_TOOLWINDOW) & ~win32con.WS_EX_APPWINDOW
+            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, new_exstyle)
+            win32gui.ShowWindow(hwnd, win32con.SW_SHOWMINNOACTIVE)
+        except Exception:
+            pass
+    return (hwnd, was_maximized, original_exstyle)
 
 
 def restore_window(hidden_entry):
-    hwnd, was_maximized = hidden_entry
+    hwnd, was_maximized, original_exstyle = hidden_entry
     if not hwnd or not win32gui.IsWindow(hwnd):
         return
+    # Erst den urspruenglichen Taskleisten-Stil zuruecksetzen (Fenster bleibt
+    # dabei unsichtbar/minimiert), dann normal wiederherstellen - sonst taucht
+    # der Taskleisten-Button teils verzoegert oder gar nicht wieder auf.
+    if original_exstyle is not None:
+        try:
+            win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
+            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, original_exstyle)
+        except Exception:
+            pass
     win32gui.ShowWindow(hwnd, win32con.SW_SHOWMAXIMIZED if was_maximized else win32con.SW_RESTORE)
     try:
         win32gui.SetForegroundWindow(hwnd)

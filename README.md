@@ -4,9 +4,10 @@
 
 ### Ein Tastendruck. Alles weg.
 
-Minimiert **beliebig viele Fenster gleichzeitig** (Browser, Discord, Spiele wie *Civilization V* …),
-mutet den Ton und pausiert das Video – per selbst gewählter Taste. Nochmal drücken, und alles ist
-wieder genauso da, wie es war.
+Blendet **beliebig viele Fenster gleichzeitig komplett aus** (Browser, Discord, Spiele wie
+*Civilization V* …) – nicht nur minimiert, sondern auch aus der Taskleiste verschwunden – mutet
+den Ton und pausiert das Video, per selbst gewählter Taste. Nochmal drücken, und alles ist wieder
+genauso da, wie es war.
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D6?logo=windows&logoColor=white)](#-installation)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -29,9 +30,10 @@ reagiert auf eine einzige, selbst gewählte Taste (Standard: `F8`).
 | | |
 |---|---|
 | 🎯 **Mehrere Ziele gleichzeitig** | Browser, Discord, ein Spiel im Vollbild – **eine** Taste steuert beliebig viele Programme auf einmal. |
+| 👻 **Wirklich weg, nicht nur minimiert** | Zielfenster verschwinden zusätzlich komplett aus der Taskleiste (kein Icon, kein Hinweis) – nicht nur verkleinert. |
 | 🎮 **Spiele-tauglich** | Nutzt dasselbe robuste Minimieren wie Alt+Tab – funktioniert auch bei Vollbild-Titeln wie *Civilization V*. Reagiert ein älteres Spiel nicht, wird automatisch mit Force-Minimize nachgeholfen. |
 | 🔇 **Ton & Video** | Muted die System-Lautstärke und sendet die Media-Play/Pause-Taste, damit YouTube/Netflix wirklich pausiert. |
-| ↩️ **Perfekt rückgängig** | Jedes Fenster kehrt exakt in seinen vorherigen Zustand zurück (maximiert bleibt maximiert). |
+| ↩️ **Perfekt rückgängig & immer synchron** | Jedes Fenster kehrt exakt in seinen vorherigen Zustand zurück (maximiert bleibt maximiert). WinVanish prüft dafür bei jedem Tastendruck den echten Fensterzustand – kein Fenster bleibt je "hängen". |
 | 🌗 **Adaptives Icon** | Das Tray-Icon erkennt live, ob Windows im hellen oder dunklen Design läuft, und wechselt automatisch – ganz ohne Neustart. |
 | ⌨️ **Frei wählbare Taste** | Einzelne Taste oder Kombination (`Strg+Shift+M`, `F9`, `Druck`, …) – vom Tray-Menü aus in Sekunden eingerichtet. |
 | 🚀 **Autostart** | Optional startet WinVanish selbst automatisch mit Windows – und/oder deine Zielprogramme starten automatisch mit, falls sie gerade nicht laufen. |
