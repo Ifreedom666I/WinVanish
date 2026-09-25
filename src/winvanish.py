@@ -266,8 +266,8 @@ def register_hotkey(key):
 THEME_POLL_SECONDS = 2
 
 ICON_FILES = {
-    "light": os.path.join(RESOURCE_DIR, "wv_hell.png"),
-    "dark": os.path.join(RESOURCE_DIR, "wv_dunkel.png"),
+    "light": os.path.join(RESOURCE_DIR, "icon-light.png"),
+    "dark": os.path.join(RESOURCE_DIR, "icon-dark.png"),
 }
 
 
