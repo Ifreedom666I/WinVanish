@@ -21,6 +21,10 @@ installer/*.pfx
 config.json
 config.json.bak
 
+# Log-Datei (persoenliche Laufzeit-Daten, waechst lokal)
+winvanish.log*
+src/winvanish.log*
+
 # Editors / OS
 .vscode/
 .idea/

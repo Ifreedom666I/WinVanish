@@ -98,7 +98,21 @@ Ab jetzt schaltet **eine** Taste **alle** diese Programme gleichzeitig. „Ziel-
 > **Immer synchron:** WinVanish merkt sich nicht nur "ein/aus", sondern prüft bei jedem
 > Tastendruck den tatsächlichen Zustand jedes Ziel-Fensters. Wurde eins zwischendurch von Hand
 > wieder geöffnet, minimiert der nächste Tastendruck **alle erneut**, statt sie durcheinander zu
-> bringen – restauriert wird nur, wenn wirklich alle gerade minimiert sind.
+> bringen – restauriert wird nur, wenn wirklich alle gerade minimiert sind. Das funktioniert auch
+> dann noch, wenn WinVanish zwischenzeitlich neu gestartet wurde (Selbstheilung).
+
+### Wenn mal etwas nicht funktioniert: die Log-Datei
+
+Tray-Icon → **„Log-Datei öffnen“** zeigt `winvanish.log` (liegt neben der `.exe`) im Texteditor.
+Dort steht zu jedem Tastendruck: welche Ziel-Fenster gefunden wurden, was minimiert/wiederhergestellt
+wurde und jeder Fehler, der dabei aufgetreten ist – inklusive unerwarteter Abstürze, die sonst
+(da WinVanish ohne sichtbares Konsolenfenster läuft) spurlos geblieben wären. Wächst nicht
+unbegrenzt (max. 1 MB, 2 alte Versionen als Backup).
+
+> **Hinweis zu alten Vollbild-Spielen (DX9-Exclusive-Modus):** Bei manchen älteren Titeln entfernt
+> WinVanish den Taskleisten-Button bewusst **nicht** zusätzlich (nur normales Minimieren) – der
+> Taskleisten-Trick kann bei diesen Spielen sonst dazu führen, dass sie sich nicht mehr sauber
+> wiederherstellen lassen. Moderne Spiele (Borderless/Windowed) sind davon nicht betroffen.
 
 ### Weitere Optionen (Tray-Menü)
 - **Video pausieren beim Verstecken** – sendet zusätzlich Media-Play/Pause

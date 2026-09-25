@@ -17,15 +17,19 @@ Alles wird ueber das Tray-Icon (unten rechts bei der Uhr) eingestellt:
 """
 
 import json
+import logging
+import logging.handlers
 import os
 import subprocess
 import sys
 import threading
 import time
+import traceback
 import winreg
 
 import keyboard
 import psutil
+import win32api
 import win32con
 import win32gui
 import win32process
@@ -48,6 +52,47 @@ else:
     RESOURCE_DIR = BASE_DIR
 
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
+LOG_PATH = os.path.join(BASE_DIR, "winvanish.log")
+
+# ----------------------- Log-Datei -----------------------
+# Damit sich "manchmal geht's nicht"-Faelle nachvollziehen lassen: jeder
+# Tastendruck, jede gefundene/fehlende Ziel-Fenster-Suche und jeder Fehler
+# landet hier (max. 1 MB, 2 alte Dateien als Backup - waechst nicht unbegrenzt).
+log = logging.getLogger("winvanish")
+log.setLevel(logging.DEBUG)
+_log_handler = logging.handlers.RotatingFileHandler(
+    LOG_PATH, maxBytes=1_000_000, backupCount=2, encoding="utf-8"
+)
+_log_handler.setFormatter(logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+))
+log.addHandler(_log_handler)
+
+
+def log_unhandled_exception(exc_type, exc_value, exc_tb):
+    log.error(
+        "UNBEHANDELTER FEHLER - Programm haette abstuerzen koennen:\n%s",
+        "".join(traceback.format_exception(exc_type, exc_value, exc_tb)),
+    )
+
+
+sys.excepthook = log_unhandled_exception
+
+
+def log_unhandled_thread_exception(args):
+    # Fehler in Hintergrund-Threads (Taste aendern, Ziel hinzufuegen, Theme-
+    # Ueberwachung, ...) landen NICHT in sys.excepthook - dafuer extra.
+    log.error(
+        "UNBEHANDELTER FEHLER in Thread '%s':\n%s",
+        args.thread.name if args.thread else "?",
+        "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)),
+    )
+
+
+threading.excepthook = log_unhandled_thread_exception
+
+log.info("=" * 60)
+log.info("WinVanish gestartet (BASE_DIR=%s)", BASE_DIR)
 DEFAULT_CONFIG = {
     "toggle": "f8",
     # Liste von Ziel-Programmen: [{"exe": "C:\\...\\civ5.exe", "title": "Civilization V"}, ...]
@@ -75,7 +120,8 @@ def load_config():
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
-        except Exception:
+        except Exception as e:
+            log.error("load_config: config.json konnte nicht gelesen werden, nutze Standardwerte: %s", e)
             loaded = {}
         cfg.update(loaded)
         # Migration vom alten Einzel-Ziel-Format (target_exe/target_title)
@@ -118,50 +164,87 @@ def is_window_maximized(hwnd):
         return False
 
 
+def _is_stuck_offscreen(hwnd):
+    """Windows verschiebt minimierte Fenster intern auf (-32000, -32000).
+    Bleibt ein Fenster nach dem Wiederherstellen dort haengen (v.a. bei
+    DX9-Vollbild-Spielen im Exclusive-Modus passiert das gelegentlich),
+    ist es fuer den Nutzer trotz 'erfolgreichem' ShowWindow unsichtbar."""
+    try:
+        left, top, _, _ = win32gui.GetWindowRect(hwnd)
+        return left <= -30000 and top <= -30000
+    except Exception:
+        return False
+
+
 def minimize_window(hwnd):
-    """Minimiert ein Fenster robust - auch Vollbild-Spiele (Alt+Tab-Verhalten) -
-    und entfernt zusaetzlich dessen Button aus der Taskleiste, damit wirklich
-    nichts mehr von dem Programm zu sehen ist. Merkt sich vorher, ob es
-    maximiert war und welchen Taskleisten-Stil es hatte, damit restore_window
-    es korrekt wiederherstellen kann."""
+    """Minimiert ein Fenster robust - auch Vollbild-Spiele (Alt+Tab-Verhalten).
+    Merkt sich vorher, ob es maximiert war, damit restore_window es korrekt
+    wiederherstellen kann.
+
+    Der Taskleisten-Button wird NUR bei Fenstern entfernt, die normal auf
+    SW_MINIMIZE reagieren. Fenster, die dafuer SW_FORCEMINIMIZE brauchten
+    (typisch fuer altes DirectX-9-Exclusive-Vollbild, z.B. Civ 5), werden
+    bewusst NICHT per Fenster-Stil manipuliert: dieser Trick kann bei
+    solchen Spielen dazu fuehren, dass sie in einem kaputten Zustand haengen
+    bleiben (auf (-32000,-32000) "minimiert", aber weder normal
+    minimiert noch wiederherstellbar) - lieber zuverlaessig nur minimiert
+    als kaputt."""
     if not hwnd or not win32gui.IsWindow(hwnd):
+        log.warning("minimize_window: hwnd %s ist ungueltig/existiert nicht mehr", hwnd)
         return None
+    title = win32gui.GetWindowText(hwnd)
     was_maximized = is_window_maximized(hwnd)
     try:
         original_exstyle = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
-    except Exception:
+    except Exception as e:
         original_exstyle = None
+        log.warning("minimize_window: GetWindowLong fehlgeschlagen fuer '%s': %s", title, e)
     try:
         win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
-    except Exception:
+    except Exception as e:
+        log.error("minimize_window: SW_MINIMIZE fehlgeschlagen fuer '%s': %s", title, e)
         return None
     time.sleep(MINIMIZE_SETTLE_SECONDS)
     # Manche Vollbild-/Exclusive-Fenster (aeltere DirectX-Spiele) reagieren nicht
     # auf das normale SW_MINIMIZE. Falls es noch nicht minimiert ist -> nachlegen.
+    needed_force_minimize = False
     try:
         placement = win32gui.GetWindowPlacement(hwnd)
         if placement[1] != win32con.SW_SHOWMINIMIZED:
+            needed_force_minimize = True
+            log.info("minimize_window: '%s' reagiert nicht auf SW_MINIMIZE, versuche SW_FORCEMINIMIZE", title)
             win32gui.ShowWindow(hwnd, win32con.SW_FORCEMINIMIZE)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("minimize_window: Force-Minimize-Check fehlgeschlagen fuer '%s': %s", title, e)
+
     # Taskleisten-Button entfernen: WS_EX_TOOLWINDOW setzen / WS_EX_APPWINDOW
-    # entfernen. Windows aktualisiert die Taskleiste dafuer nur zuverlaessig,
-    # wenn das Fenster kurz komplett versteckt und danach neu gezeigt wird.
-    if original_exstyle is not None:
+    # entfernen. Nur bei "normalen" Fenstern - siehe Docstring oben.
+    # Windows aktualisiert die Taskleiste dafuer nur zuverlaessig, wenn das
+    # Fenster kurz komplett versteckt und danach neu gezeigt wird.
+    if original_exstyle is not None and not needed_force_minimize:
         try:
             win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
             new_exstyle = (original_exstyle | win32con.WS_EX_TOOLWINDOW) & ~win32con.WS_EX_APPWINDOW
             win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, new_exstyle)
             win32gui.ShowWindow(hwnd, win32con.SW_SHOWMINNOACTIVE)
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("minimize_window: Taskleisten-Button verstecken fehlgeschlagen fuer '%s': %s", title, e)
+            original_exstyle = None  # restore_window soll den Stil dann nicht anfassen
+    elif needed_force_minimize:
+        original_exstyle = None  # nichts am Stil veraendert -> restore_window soll ihn in Ruhe lassen
+        log.info("minimize_window: '%s' ist ein Vollbild-Exclusive-Fenster - Taskleisten-Trick uebersprungen", title)
+
+    log.info("minimize_window: '%s' (hwnd %s) versteckt (war_maximiert=%s, taskleiste_versteckt=%s)",
+              title, hwnd, was_maximized, original_exstyle is not None)
     return (hwnd, was_maximized, original_exstyle)
 
 
 def restore_window(hidden_entry):
     hwnd, was_maximized, original_exstyle = hidden_entry
     if not hwnd or not win32gui.IsWindow(hwnd):
+        log.warning("restore_window: hwnd %s existiert nicht mehr (Programm evtl. beendet) - ueberspringe", hwnd)
         return
+    title = win32gui.GetWindowText(hwnd)
     # Erst den urspruenglichen Taskleisten-Stil zuruecksetzen (Fenster bleibt
     # dabei unsichtbar/minimiert), dann normal wiederherstellen - sonst taucht
     # der Taskleisten-Button teils verzoegert oder gar nicht wieder auf.
@@ -169,13 +252,31 @@ def restore_window(hidden_entry):
         try:
             win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
             win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, original_exstyle)
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("restore_window: Taskleisten-Stil zuruecksetzen fehlgeschlagen fuer '%s': %s", title, e)
     win32gui.ShowWindow(hwnd, win32con.SW_SHOWMAXIMIZED if was_maximized else win32con.SW_RESTORE)
     try:
         win32gui.SetForegroundWindow(hwnd)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("restore_window: SetForegroundWindow fehlgeschlagen fuer '%s': %s", title, e)
+
+    # Selbstheilung: manche Fenster (v.a. altes DX9-Vollbild) bleiben trotz
+    # "erfolgreichem" ShowWindow auf der internen Minimiert-Position
+    # (-32000,-32000) haengen und sind dadurch unsichtbar. Falls das passiert,
+    # aktiv auf den sichtbaren Bereich zurueckschieben.
+    time.sleep(0.15)
+    if _is_stuck_offscreen(hwnd):
+        log.warning("restore_window: '%s' haengt auf (-32000,-32000) fest - erzwinge Position zurueck", title)
+        try:
+            monitor = win32api.GetMonitorInfo(win32api.MonitorFromWindow(hwnd))
+            l, t, r, b = monitor["Monitor"]
+            win32gui.ShowWindow(hwnd, win32con.SW_SHOWNORMAL)
+            win32gui.SetWindowPos(hwnd, win32con.HWND_TOP, l, t, r - l, b - t, win32con.SWP_SHOWWINDOW)
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception:
+            log.exception("restore_window: Zwangs-Reposition fuer '%s' fehlgeschlagen", title)
+
+    log.info("restore_window: '%s' (hwnd %s) wiederhergestellt", title, hwnd)
 
 
 def get_exe_of_window(hwnd):
@@ -204,6 +305,8 @@ def find_windows_for_exe(target_exe, title_sub=""):
         matches.append(hwnd)
 
     win32gui.EnumWindows(enum_handler, None)
+    if not matches:
+        log.debug("find_windows_for_exe: kein sichtbares Fenster fuer '%s' (title_sub='%s')", target_exe, title_sub)
     return matches
 
 
@@ -274,10 +377,11 @@ def _current_target_hwnds():
             found = find_windows_for_exe(exe, t.get("title", ""))
             if not found:
                 # Programm laeuft nicht (oder kein sichtbares Fenster) -> starten
+                log.info("_current_target_hwnds: kein Fenster fuer '%s' gefunden - versuche Start", exe)
                 try:
                     subprocess.Popen([exe])
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.error("_current_target_hwnds: Start von '%s' fehlgeschlagen: %s", exe, e)
                 continue
             hwnds.extend(found)
     else:
@@ -288,43 +392,79 @@ def _current_target_hwnds():
 
 
 def toggle_panic():
+    """Wird direkt vom keyboard-Hook aufgerufen, sobald die Taste gedrueckt
+    wird. WICHTIG: der komplette Ablauf steckt in einem try/except - eine
+    unbehandelte Exception hier wuerde sonst den Hotkey-Callback im
+    'keyboard'-Modul lautlos sterben lassen (die Taste 'geht dann einfach
+    nicht mehr', ohne jede sichtbare Fehlermeldung, da die App --noconsole
+    laeuft). So landet jeder Fehler stattdessen im Log."""
     if state["capturing"]:
+        log.debug("toggle_panic: ignoriert - gerade wird eine Taste/ein Fenster erfasst (capturing=True)")
         return
 
-    hwnds = _current_target_hwnds()
-    if not hwnds:
-        return
+    try:
+        hwnds = _current_target_hwnds()
+        if not hwnds:
+            log.warning("toggle_panic: keine Ziel-Fenster gefunden - nichts zu tun")
+            return
 
-    # Wichtig: der ECHTE aktuelle Zustand jedes Ziel-Fensters entscheidet -
-    # nicht eine intern gemerkte Flag. Wurde z.B. ein Fenster zwischendurch
-    # von Hand wiederhergestellt, waeren sonst Chrome und Civ 5 nicht mehr
-    # synchron (eins bleibt offen, das andere geht zu). Nur wenn WIRKLICH
-    # alle Ziel-Fenster gerade minimiert sind, wird wiederhergestellt -
-    # in jedem anderen Fall (auch bei gemischtem Zustand) werden IMMER
-    # alle auf einmal minimiert, bis sie wieder synchron sind.
-    all_minimized = all(
-        win32gui.IsIconic(hwnd) for hwnd in hwnds if win32gui.IsWindow(hwnd)
-    )
+        # Wichtig: der ECHTE aktuelle Zustand jedes Ziel-Fensters entscheidet -
+        # nicht eine intern gemerkte Flag. Wurde z.B. ein Fenster zwischendurch
+        # von Hand wiederhergestellt, waeren sonst Chrome und Civ 5 nicht mehr
+        # synchron (eins bleibt offen, das andere geht zu). Nur wenn WIRKLICH
+        # alle Ziel-Fenster gerade minimiert sind, wird wiederhergestellt -
+        # in jedem anderen Fall (auch bei gemischtem Zustand) werden IMMER
+        # alle auf einmal minimiert, bis sie wieder synchron sind.
+        all_minimized = all(
+            win32gui.IsIconic(hwnd) for hwnd in hwnds if win32gui.IsWindow(hwnd)
+        )
+        log.info(
+            "toggle_panic: ausgeloest - %d Ziel-Fenster gefunden, alle_minimiert=%s",
+            len(hwnds), all_minimized,
+        )
 
-    if all_minimized:
-        for entry in state["hidden"]:
-            restore_window(entry)
-        mute(False)
-        if state["hidden"]:
-            send_media_play_pause()
-        state["hidden"] = []
-        state["active"] = False
-    else:
-        hidden = []
-        for hwnd in hwnds:
-            entry = minimize_window(hwnd)
-            if entry:
-                hidden.append(entry)
-        if hidden:
-            send_media_play_pause()
-        mute(True)
-        state["hidden"] = hidden
-        state["active"] = True
+        if all_minimized:
+            # Nicht blind nur state["hidden"] durchgehen: wurde WinVanish
+            # zwischenzeitlich neu gestartet (Absturz, Update, manuelles
+            # Neustarten), waere dieser Zwischenspeicher leer, obwohl die
+            # Fenster noch real minimiert/versteckt sind - sie blieben dann
+            # fuer immer "haengen". Stattdessen ueber die aktuell gefundenen
+            # Ziel-Fenster gehen und pro Fenster den gemerkten Eintrag nutzen,
+            # falls vorhanden, sonst bestmoeglich (nur) wiederherstellen.
+            remembered = {entry[0]: entry for entry in state["hidden"]}
+            for hwnd in hwnds:
+                entry = remembered.get(hwnd)
+                if entry:
+                    restore_window(entry)
+                elif win32gui.IsWindow(hwnd) and win32gui.IsIconic(hwnd):
+                    log.warning(
+                        "toggle_panic: hwnd %s ohne gemerkten Zustand (z.B. nach WinVanish-Neustart) "
+                        "- stelle bestmoeglich wieder her", hwnd,
+                    )
+                    restore_window((hwnd, False, None))
+            mute(False)
+            if state["hidden"] or remembered:
+                send_media_play_pause()
+            state["hidden"] = []
+            state["active"] = False
+        else:
+            hidden = []
+            for hwnd in hwnds:
+                entry = minimize_window(hwnd)
+                if entry:
+                    hidden.append(entry)
+            if hidden:
+                send_media_play_pause()
+            mute(True)
+            state["hidden"] = hidden
+            state["active"] = True
+            if len(hidden) < len(hwnds):
+                log.warning(
+                    "toggle_panic: nur %d von %d Ziel-Fenstern konnten versteckt werden",
+                    len(hidden), len(hwnds),
+                )
+    except Exception:
+        log.exception("toggle_panic: unerwarteter Fehler beim Umschalten")
 
 
 def register_hotkey(key):
@@ -334,7 +474,11 @@ def register_hotkey(key):
         except (KeyError, ValueError):
             pass
         state["hotkey_handle"] = None
-    state["hotkey_handle"] = keyboard.add_hotkey(key, toggle_panic)
+    try:
+        state["hotkey_handle"] = keyboard.add_hotkey(key, toggle_panic)
+        log.info("register_hotkey: Taste '%s' erfolgreich registriert", key)
+    except Exception:
+        log.exception("register_hotkey: Registrieren der Taste '%s' fehlgeschlagen", key)
 
 
 # ----------------------- Tray-Icon (hell/dunkel je nach Windows-Design) -----------------------
@@ -568,6 +712,21 @@ def on_open_website(icon, item):
         pass
 
 
+def on_open_log(icon, item):
+    """Oeffnet die Log-Datei im Standard-Texteditor - fuer den Fall, dass die
+    Taste mal 'einfach nicht geht': hier steht genau, was WinVanish bei jedem
+    Tastendruck gefunden/versucht/verworfen hat."""
+    try:
+        _log_handler.flush()
+        if os.path.exists(LOG_PATH):
+            os.startfile(LOG_PATH)
+        else:
+            icon.notify("Noch keine Log-Datei vorhanden.", "WinVanish")
+    except Exception as e:
+        log.exception("on_open_log: Log-Datei konnte nicht geoeffnet werden")
+        icon.notify(f"Log konnte nicht geöffnet werden: {e}", "WinVanish")
+
+
 def run_tray():
     menu = pystray.Menu(
         pystray.MenuItem(current_key_label, None, enabled=False),
@@ -590,6 +749,7 @@ def run_tray():
             checked=lambda item: config.get("auto_launch", False),
         ),
         pystray.Menu.SEPARATOR,
+        pystray.MenuItem("📄  Log-Datei öffnen (falls mal was nicht geht)", on_open_log),
         pystray.MenuItem("👻  WinVanish  ·  by Kotsch.Tech", on_open_website),
         pystray.MenuItem(f"🌐  {WEBSITE}", on_open_website),
         pystray.MenuItem("✕  Beenden", on_exit),
@@ -603,16 +763,22 @@ def run_tray():
 
 
 def main():
-    register_hotkey(config["toggle"])
-    if config.get("auto_launch"):
-        for t in config.get("targets") or []:
-            exe = t.get("exe")
-            if exe and not is_exe_running(exe):
-                try:
-                    subprocess.Popen([exe])
-                except Exception:
-                    pass
-    run_tray()
+    try:
+        register_hotkey(config["toggle"])
+        if config.get("auto_launch"):
+            for t in config.get("targets") or []:
+                exe = t.get("exe")
+                if exe and not is_exe_running(exe):
+                    try:
+                        subprocess.Popen([exe])
+                    except Exception as e:
+                        log.error("main: Auto-Start von '%s' fehlgeschlagen: %s", exe, e)
+        run_tray()
+    except Exception:
+        log.exception("main: WinVanish ist unerwartet abgestuerzt")
+        raise
+    finally:
+        log.info("WinVanish beendet")
 
 
 if __name__ == "__main__":
