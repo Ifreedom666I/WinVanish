@@ -284,11 +284,18 @@ def get_exe_of_window(hwnd):
     return psutil.Process(pid).exe()
 
 
-def find_windows_for_exe(target_exe, title_sub=""):
+def find_windows_for_exe(target_exe):
     """Findet alle sichtbaren Top-Level-Fenster eines Programms (z.B. mehrere
-    Fenster/Dialoge desselben Spiels/Browsers)."""
+    Fenster/Dialoge desselben Spiels/Browsers) - reine Zuordnung ueber die
+    exe, OHNE Filterung nach Fenstertitel. Der gespeicherte 'title' in der
+    config.json ist nur ein Anzeige-Hinweis vom Moment des Hinzufuegens
+    (siehe DEFAULT_CONFIG) und darf NICHT als Suchfilter verwendet werden:
+    bei Browsern, IDEs, Mediaplayern etc. aendert sich der Fenstertitel
+    staendig (anderer Tab, andere Datei, ...). Wuerde man danach filtern,
+    faende WinVanish das laengst offene Fenster fast nie mehr wieder und
+    wuerde stattdessen woanders staendig ein NEUES Fenster/Programm starten -
+    genau das war der 'oeffnet ein neues Chrome-Fenster'-Bug."""
     target_exe = os.path.normcase(target_exe)
-    title_sub = (title_sub or "").lower()
     matches = []
 
     def enum_handler(hwnd, _):
@@ -300,13 +307,11 @@ def find_windows_for_exe(target_exe, title_sub=""):
             return
         if os.path.normcase(exe) != target_exe:
             return
-        if title_sub and title_sub not in win32gui.GetWindowText(hwnd).lower():
-            return
         matches.append(hwnd)
 
     win32gui.EnumWindows(enum_handler, None)
     if not matches:
-        log.debug("find_windows_for_exe: kein sichtbares Fenster fuer '%s' (title_sub='%s')", target_exe, title_sub)
+        log.debug("find_windows_for_exe: kein sichtbares Fenster fuer '%s'", target_exe)
     return matches
 
 
@@ -374,7 +379,7 @@ def _current_target_hwnds():
             exe = t.get("exe")
             if not exe:
                 continue
-            found = find_windows_for_exe(exe, t.get("title", ""))
+            found = find_windows_for_exe(exe)
             if not found:
                 # Programm laeuft nicht (oder kein sichtbares Fenster) -> starten
                 log.info("_current_target_hwnds: kein Fenster fuer '%s' gefunden - versuche Start", exe)

@@ -100,6 +100,11 @@ Ab jetzt schaltet **eine** Taste **alle** diese Programme gleichzeitig. „Ziel-
 > wieder geöffnet, minimiert der nächste Tastendruck **alle erneut**, statt sie durcheinander zu
 > bringen – restauriert wird nur, wenn wirklich alle gerade minimiert sind. Das funktioniert auch
 > dann noch, wenn WinVanish zwischenzeitlich neu gestartet wurde (Selbstheilung).
+>
+> **Findet dein Programm zuverlässig wieder:** Die Suche nach dem Ziel-Fenster läuft rein über die
+> `.exe`, nicht über den Fenstertitel. Wichtig z.B. bei Browsern: der Titel ändert sich ständig
+> (anderer Tab, anderes Video) – würde WinVanish danach filtern, würde es das längst offene Fenster
+> oft nicht wiederfinden und stattdessen ein komplett neues Fenster öffnen.
 
 ### Wenn mal etwas nicht funktioniert: die Log-Datei
 
