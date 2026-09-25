@@ -1,0 +1,28 @@
+# PyInstaller
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+
+# Lokale Laufzeit-Kopie der exe (Distribution laeuft ueber kotsch.tech)
+/WinVanish.exe
+
+# Installer build output
+installer/Output/
+
+# Secrets - never commit signing certificates/keys
+*.pfx
+*.p12
+*.pem
+installer/*.pfx
+
+# Persoenliche Laufzeit-Konfiguration (enthaelt eigene Fenstertitel/Pfade)
+config.json
+config.json.bak
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
