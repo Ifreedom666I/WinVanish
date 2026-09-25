@@ -7,6 +7,7 @@ den Zustand (maximiert/normal), in dem es vorher war.
 Alles wird ueber das Tray-Icon (unten rechts bei der Uhr) eingestellt:
 - Taste aendern...              -> gewuenschte Taste/Kombination einfach druecken
 - Ziel-Fenster hinzufuegen...    -> z.B. auf Civ 5 klicken/wechseln, wird gemerkt
+- Aus offenen Fenstern waehlen.. -> Liste aller offenen Fenster, Mehrfachauswahl per Strg/Shift-Klick
 - Ziel-Fenster entfernen...      -> einzelnes Ziel aus der Liste loeschen
 - Alle Ziele zuruecksetzen       -> wieder "was gerade aktiv ist" verwenden
 - Video pausieren (An/Aus)       -> Media-Play/Pause-Taste beim Verstecken mitsenden
@@ -178,6 +179,37 @@ def find_windows_for_exe(target_exe, title_sub=""):
     return matches
 
 
+def list_open_windows():
+    """Listet alle aktuell offenen, "echten" Fenster (wie sie auch in der
+    Taskleiste/beim Alt+Tab auftauchen) mit Titel und zugehoeriger exe auf -
+    Basis fuer die Mehrfachauswahl im Tray-Menue."""
+    own_pid = os.getpid()
+    results = []
+
+    def enum_handler(hwnd, _):
+        if not win32gui.IsWindowVisible(hwnd):
+            return
+        title = win32gui.GetWindowText(hwnd)
+        if not title:
+            return
+        # Tool-Fenster (z.B. Flyouts, unsichtbare Hilfsfenster) ausblenden,
+        # damit nur "richtige" Programme in der Liste auftauchen.
+        exstyle = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+        if exstyle & win32con.WS_EX_TOOLWINDOW:
+            return
+        try:
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            if pid == own_pid:
+                return
+            exe = get_exe_of_window(hwnd)
+        except Exception:
+            return
+        results.append({"hwnd": hwnd, "title": title, "exe": exe})
+
+    win32gui.EnumWindows(enum_handler, None)
+    return results
+
+
 def is_exe_running(target_exe):
     target_exe = os.path.normcase(target_exe)
     for p in psutil.process_iter(["exe"]):
@@ -199,54 +231,72 @@ def send_media_play_pause():
 
 # ----------------------- Kernlogik -----------------------
 
+def _current_target_hwnds():
+    """Sucht die aktuellen Fenster-Handles aller konfigurierten Ziele frisch
+    (nicht aus einem alten Zwischenspeicher) und startet fehlende
+    Ziel-Programme bei Bedarf. Ohne konfigurierte Ziele: aktuell aktives
+    Fenster als Fallback."""
+    targets = config.get("targets") or []
+    hwnds = []
+    if targets:
+        for t in targets:
+            exe = t.get("exe")
+            if not exe:
+                continue
+            found = find_windows_for_exe(exe, t.get("title", ""))
+            if not found:
+                # Programm laeuft nicht (oder kein sichtbares Fenster) -> starten
+                try:
+                    subprocess.Popen([exe])
+                except Exception:
+                    pass
+                continue
+            hwnds.extend(found)
+    else:
+        hwnd = win32gui.GetForegroundWindow()
+        if hwnd:
+            hwnds.append(hwnd)
+    return hwnds
+
+
 def toggle_panic():
     if state["capturing"]:
         return
 
-    if not state["active"]:
-        targets = config.get("targets") or []
-        hidden = []
-        any_hidden = False
+    hwnds = _current_target_hwnds()
+    if not hwnds:
+        return
 
-        if targets:
-            for t in targets:
-                exe = t.get("exe")
-                if not exe:
-                    continue
-                hwnds = find_windows_for_exe(exe, t.get("title", ""))
-                if not hwnds:
-                    # Programm laeuft nicht (oder kein sichtbares Fenster) -> starten
-                    try:
-                        subprocess.Popen([exe])
-                    except Exception:
-                        pass
-                    continue
-                for hwnd in hwnds:
-                    entry = minimize_window(hwnd)
-                    if entry:
-                        hidden.append(entry)
-                        any_hidden = True
-        else:
-            # Kein Ziel konfiguriert -> Fallback wie bisher: aktives Fenster
-            hwnd = win32gui.GetForegroundWindow()
-            entry = minimize_window(hwnd)
-            if entry:
-                hidden.append(entry)
-                any_hidden = True
+    # Wichtig: der ECHTE aktuelle Zustand jedes Ziel-Fensters entscheidet -
+    # nicht eine intern gemerkte Flag. Wurde z.B. ein Fenster zwischendurch
+    # von Hand wiederhergestellt, waeren sonst Chrome und Civ 5 nicht mehr
+    # synchron (eins bleibt offen, das andere geht zu). Nur wenn WIRKLICH
+    # alle Ziel-Fenster gerade minimiert sind, wird wiederhergestellt -
+    # in jedem anderen Fall (auch bei gemischtem Zustand) werden IMMER
+    # alle auf einmal minimiert, bis sie wieder synchron sind.
+    all_minimized = all(
+        win32gui.IsIconic(hwnd) for hwnd in hwnds if win32gui.IsWindow(hwnd)
+    )
 
-        if any_hidden:
-            send_media_play_pause()
-        mute(True)
-        state["hidden"] = hidden
-        state["active"] = True
-    else:
+    if all_minimized:
         for entry in state["hidden"]:
             restore_window(entry)
         mute(False)
         if state["hidden"]:
             send_media_play_pause()
-        state["active"] = False
         state["hidden"] = []
+        state["active"] = False
+    else:
+        hidden = []
+        for hwnd in hwnds:
+            entry = minimize_window(hwnd)
+            if entry:
+                hidden.append(entry)
+        if hidden:
+            send_media_play_pause()
+        mute(True)
+        state["hidden"] = hidden
+        state["active"] = True
 
 
 def register_hotkey(key):
@@ -387,6 +437,60 @@ def _capture_add_target(icon):
         icon.update_menu()
 
 
+def _is_window_target(exe):
+    norm = os.path.normcase(exe)
+    return any(os.path.normcase(t.get("exe", "")) == norm for t in config.get("targets", []))
+
+
+def _make_toggle_window_handler(exe, title):
+    """Checkbox-Klick im Untermenue: Fenster/Programm als Ziel an- oder
+    abhaken - direkt im Tray-Menue, ohne separates Fenster."""
+    def handler(icon, item):
+        targets = config.setdefault("targets", [])
+        norm = os.path.normcase(exe)
+        if any(os.path.normcase(t.get("exe", "")) == norm for t in targets):
+            config["targets"] = [t for t in targets if os.path.normcase(t.get("exe", "")) != norm]
+            save_config(config)
+            icon.notify(f"Ziel entfernt: {os.path.basename(exe)}", "WinVanish")
+        else:
+            targets.append({"exe": exe, "title": title})
+            save_config(config)
+            icon.notify(f"Ziel hinzugefügt: {title}", "WinVanish")
+        icon.update_menu()
+    return handler
+
+
+def _build_open_windows_submenu_items():
+    """Baut das Untermenue 'Aus offenen Fenstern waehlen' - jede Zeile ist
+    eine anhakbare Checkbox fuer ein aktuell offenes Fenster/Programm.
+    Mehrere Haekchen gleichzeitig setzen = Mehrfachauswahl, ganz ohne
+    Klicken/Wechseln zum Zielfenster und ohne separates Popup-Fenster."""
+    windows = list_open_windows()
+    # Pro Programm (exe) nur einen Eintrag zeigen, auch wenn es mehrere
+    # Fenster hat - unser Ziel-Modell arbeitet ohnehin pro exe.
+    by_exe = {}
+    for w in windows:
+        key = os.path.normcase(w["exe"])
+        if key not in by_exe:
+            by_exe[key] = w
+    entries = sorted(by_exe.values(), key=lambda w: w["title"].lower())
+
+    if not entries:
+        return [pystray.MenuItem("(keine offenen Fenster gefunden)", None, enabled=False)]
+
+    items = []
+    for w in entries:
+        base = os.path.basename(w["exe"])
+        title_short = w["title"] if len(w["title"]) <= 42 else w["title"][:39] + "..."
+        label = f"{title_short}  —  {base}"
+        items.append(pystray.MenuItem(
+            label,
+            _make_toggle_window_handler(w["exe"], w["title"]),
+            checked=lambda item, exe=w["exe"]: _is_window_target(exe),
+        ))
+    return items
+
+
 def _make_remove_handler(exe):
     def handler(icon, item):
         config["targets"] = [t for t in config.get("targets", []) if t.get("exe") != exe]
@@ -443,6 +547,7 @@ def run_tray():
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("✏️  Taste ändern...", on_change_key),
         pystray.MenuItem("➕  Ziel-Fenster hinzufügen...", on_add_target),
+        pystray.MenuItem("📋  Aus offenen Fenstern wählen", pystray.Menu(_build_open_windows_submenu_items)),
         pystray.MenuItem("➖  Ziel-Fenster entfernen", pystray.Menu(_build_remove_submenu_items)),
         pystray.MenuItem("↺  Alle Ziele zurücksetzen", on_clear_targets),
         pystray.Menu.SEPARATOR,

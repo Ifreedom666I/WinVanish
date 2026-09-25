@@ -79,11 +79,24 @@ unter [Selbst bauen](#️-selbst-bauen).
 Tray-Icon → **„Taste ändern…“** → gewünschte Taste/Kombination drücken. Sofort gespeichert.
 
 ### Mehrere Ziel-Fenster festlegen
+
+**Variante A – anklicken/wechseln:**
 1. Tray-Icon → **„Ziel-Fenster hinzufügen…“**
 2. Innerhalb von 4 Sekunden zum gewünschten Fenster wechseln (z. B. Civilization V anklicken)
 3. Schritt 1+2 beliebig oft wiederholen – Chrome, Discord, ein Spiel, …
-4. Ab jetzt schaltet **eine** Taste **alle** diese Programme gleichzeitig
-5. „Ziel-Fenster entfernen“ / „Alle Ziele zurücksetzen“ passen die Liste jederzeit an
+
+**Variante B – aus der Liste auswählen (kein Wechseln nötig):**
+1. Tray-Icon → **„Aus offenen Fenstern wählen“**
+2. Untermenü zeigt alle gerade offenen Fenster/Programme als Checkboxen
+3. Beliebig viele anhaken – **Mehrfachauswahl**, direkt im Tray-Menü, ohne Extra-Fenster
+
+Ab jetzt schaltet **eine** Taste **alle** diese Programme gleichzeitig. „Ziel-Fenster entfernen“ /
+„Alle Ziele zurücksetzen“ passen die Liste jederzeit an.
+
+> **Immer synchron:** WinVanish merkt sich nicht nur "ein/aus", sondern prüft bei jedem
+> Tastendruck den tatsächlichen Zustand jedes Ziel-Fensters. Wurde eins zwischendurch von Hand
+> wieder geöffnet, minimiert der nächste Tastendruck **alle erneut**, statt sie durcheinander zu
+> bringen – restauriert wird nur, wenn wirklich alle gerade minimiert sind.
 
 ### Weitere Optionen (Tray-Menü)
 - **Video pausieren beim Verstecken** – sendet zusätzlich Media-Play/Pause
