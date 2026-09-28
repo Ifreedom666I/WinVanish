@@ -31,6 +31,8 @@ import keyboard
 import psutil
 import win32api
 import win32con
+import win32event
+import winerror
 import win32gui
 import win32process
 from pycaw.pycaw import AudioUtilities
@@ -194,7 +196,7 @@ def minimize_window(hwnd):
         log.warning("minimize_window: hwnd %s ist ungueltig/existiert nicht mehr", hwnd)
         return None
     title = win32gui.GetWindowText(hwnd)
-    was_maximized = is_window_maximized(hwnd)
+    rect, was_maximized = _capture_geometry(hwnd)
     try:
         original_exstyle = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
     except Exception as e:
@@ -248,11 +250,24 @@ def minimize_window(hwnd):
 
     log.info("minimize_window: '%s' (hwnd %s) versteckt (war_maximiert=%s, taskleiste_versteckt=%s)",
               title, hwnd, was_maximized, original_exstyle is not None)
-    return (hwnd, was_maximized, original_exstyle)
+    return (hwnd, was_maximized, original_exstyle, rect)
+
+
+def _capture_geometry(hwnd):
+    """Position und Maximiert-Zustand VOR dem Verstecken. Bei einem schon
+    minimierten Fenster kommt beides aus GetWindowPlacement (dessen
+    Normal-Rechteck), da GetWindowRect dann nur (-32000,-32000) liefert."""
+    try:
+        flags, show_cmd, _, _, normal_rect = win32gui.GetWindowPlacement(hwnd)
+        if win32gui.IsIconic(hwnd):
+            return tuple(normal_rect), bool(flags & win32con.WPF_RESTORETOMAXIMIZED)
+        return win32gui.GetWindowRect(hwnd), show_cmd == win32con.SW_SHOWMAXIMIZED
+    except Exception:
+        return None, False
 
 
 def restore_window(hidden_entry):
-    hwnd, was_maximized, original_exstyle = hidden_entry
+    hwnd, was_maximized, original_exstyle, rect = hidden_entry
     if not hwnd or not win32gui.IsWindow(hwnd):
         log.warning("restore_window: hwnd %s existiert nicht mehr (Programm evtl. beendet) - ueberspringe", hwnd)
         return
@@ -266,7 +281,21 @@ def restore_window(hidden_entry):
             win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, original_exstyle)
         except Exception as e:
             log.warning("restore_window: Taskleisten-Stil zuruecksetzen fehlgeschlagen fuer '%s': %s", title, e)
-    win32gui.ShowWindow(hwnd, win32con.SW_SHOWMAXIMIZED if was_maximized else win32con.SW_RESTORE)
+    # Zuerst normal wiederherstellen, dann exakt an die gemerkte Position
+    # (und damit auf den gemerkten MONITOR) schieben. Nur SW_RESTORE zu
+    # nutzen setzt das Fenster dorthin, wo Windows es zuletzt "normal"
+    # platziert hatte - bei Spielen/Mehrmonitor-Setups oft der falsche Bildschirm.
+    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+    if rect and rect[2] - rect[0] > 0 and rect[3] - rect[1] > 0 and rect[0] > -30000:
+        try:
+            win32gui.SetWindowPos(
+                hwnd, 0, rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1],
+                win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE,
+            )
+        except Exception as e:
+            log.warning("restore_window: Position zuruecksetzen fehlgeschlagen fuer '%s': %s", title, e)
+    if was_maximized:
+        win32gui.ShowWindow(hwnd, win32con.SW_SHOWMAXIMIZED)
     try:
         # Windows verweigert SetForegroundWindow, wenn der Aufruf nicht von
         # einer Eingabe stammt ("Zugriff verweigert"). Ein kurzer Alt-Tastendruck
@@ -599,14 +628,21 @@ def toggle_panic():
                         "toggle_panic: hwnd %s ohne gemerkten Zustand (z.B. nach WinVanish-Neustart) "
                         "- stelle bestmoeglich wieder her", hwnd,
                     )
-                    restore_window((hwnd, False, None))
+                    rect, was_max = _capture_geometry(hwnd)
+                    restore_window((hwnd, was_max, None, rect))
             mute(False)
             resume_media()
             state["hidden"] = []
             state["active"] = False
         else:
             hidden = []
+            previous = {e[0]: e for e in state["hidden"]}
             for hwnd in hwnds:
+                # Gemischter Zustand: ein schon von uns verstecktes Fenster nicht
+                # erneut anfassen, sonst ginge die gemerkte Ursprungsposition verloren.
+                if hwnd in previous and win32gui.IsWindow(hwnd) and win32gui.IsIconic(hwnd):
+                    hidden.append(previous[hwnd])
+                    continue
                 entry = minimize_window(hwnd)
                 if entry:
                     hidden.append(entry)
@@ -624,6 +660,34 @@ def toggle_panic():
         log.exception("toggle_panic: unerwarteter Fehler beim Umschalten")
 
 
+_toggle_lock = threading.Lock()
+_last_toggle_end = 0.0
+
+
+def on_hotkey():
+    """Hotkey-Callback. Laeuft im Tastatur-Hook-Thread und darf deshalb NICHT
+    selbst arbeiten: toggle_panic() sendet Tastendruecke (Alt, Medientaste)
+    und wartet auf Fenster - im Hook-Thread blockiert das den Hook, Windows
+    verzoegert die ganze Tastatur und wirft den Hook nach einem Timeout sogar
+    lautlos raus (Taste 'geht dann nicht mehr'). Darum: eigener Thread."""
+    threading.Thread(target=_toggle_worker, daemon=True).start()
+
+
+def _toggle_worker():
+    global _last_toggle_end
+    if not _toggle_lock.acquire(blocking=False):
+        log.info("Tastendruck ignoriert - der vorherige Vorgang laeuft noch")
+        return
+    try:
+        if time.time() - _last_toggle_end < 0.5:
+            log.info("Tastendruck ignoriert - zu kurz nach dem letzten Umschalten")
+            return
+        toggle_panic()
+    finally:
+        _last_toggle_end = time.time()
+        _toggle_lock.release()
+
+
 def register_hotkey(key):
     if state["hotkey_handle"] is not None:
         try:
@@ -632,7 +696,10 @@ def register_hotkey(key):
             pass
         state["hotkey_handle"] = None
     try:
-        state["hotkey_handle"] = keyboard.add_hotkey(key, toggle_panic)
+        # trigger_on_release: genau EIN Ausloesen pro Tastendruck, auch wenn die
+        # Taste etwas laenger gehalten wird (Tasten-Wiederholung wuerde sonst
+        # dutzende Male hintereinander umschalten = Flackern).
+        state["hotkey_handle"] = keyboard.add_hotkey(key, on_hotkey, trigger_on_release=True)
         log.info("register_hotkey: Taste '%s' erfolgreich registriert", key)
     except Exception:
         log.exception("register_hotkey: Registrieren der Taste '%s' fehlgeschlagen", key)
@@ -919,7 +986,24 @@ def run_tray():
     icon.run(setup=setup)
 
 
+_instance_mutex = None
+
+
+def ensure_single_instance():
+    """Nur EINE WinVanish-Instanz gleichzeitig. Laufen zwei (z.B. Autostart
+    plus manueller Start), reagiert jede auf dieselbe Taste: die eine
+    versteckt, die andere sieht "alles minimiert" und holt es sofort wieder
+    zurueck - Flackern, Verzoegerungen und Fenster an falscher Stelle. Eine
+    zweite Instanz beendet sich deshalb sofort."""
+    global _instance_mutex
+    _instance_mutex = win32event.CreateMutex(None, False, "Local\\KotschTech.WinVanish.SingleInstance")
+    if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
+        log.warning("Eine andere WinVanish-Instanz laeuft bereits - beende diese zweite Instanz")
+        sys.exit(0)
+
+
 def main():
+    ensure_single_instance()
     try:
         register_hotkey(config["toggle"])
         if config.get("auto_launch"):
