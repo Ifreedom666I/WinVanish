@@ -158,13 +158,14 @@ Einstellungen, nicht Teil des Repos – siehe `config.example.json` für das For
 ## 🛠️ Selbst bauen
 
 ```bash
-pip install keyboard pycaw comtypes pywin32 psutil pillow pystray pyinstaller
+pip install keyboard pycaw comtypes pywin32 psutil pillow pystray pyinstaller winrt-runtime winrt-Windows.Media.Control winrt-Windows.Foundation winrt-Windows.Foundation.Collections
 
 python -m PyInstaller --onefile --noconsole --name "WinVanish" ^
   --icon assets/icon.ico ^
   --version-file installer/version_info.txt ^
   --add-data "assets/icon-light.png;." ^
   --add-data "assets/icon-dark.png;." ^
+  --collect-submodules winrt ^
   --distpath dist --workpath build ^
   src/winvanish.py
 ```

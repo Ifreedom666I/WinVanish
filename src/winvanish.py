@@ -110,6 +110,7 @@ state = {
     # Liste von (hwnd, war_maximiert) fuer alle gerade minimierten Fenster
     "hidden": [],
     "hotkey_handle": None,
+    "paused_media": [],   # Mediaplayer, die WinVanish selbst pausiert hat (fuers Fortsetzen)
     "capturing": False,
 }
 
@@ -357,12 +358,140 @@ def is_exe_running(target_exe):
     return False
 
 
-def send_media_play_pause():
-    if config.get("pause_media", True):
+try:
+    import asyncio
+    from winrt.windows.media.control import (
+        GlobalSystemMediaTransportControlsSessionManager as _MediaManager,
+        GlobalSystemMediaTransportControlsSessionPlaybackStatus as _PlaybackStatus,
+    )
+    HAVE_MEDIA_SESSIONS = True
+except Exception:
+    HAVE_MEDIA_SESSIONS = False
+
+
+async def _pause_playing_sessions_async():
+    manager = await _MediaManager.request_async()
+    paused = []
+    for session in manager.get_sessions():
+        app_id = session.source_app_user_model_id
+        status = _PlaybackStatus(session.get_playback_info().playback_status)
+        if status == _PlaybackStatus.PLAYING:
+            ok = await session.try_pause_async()
+            log.info("pause_media: '%s' pausiert (ok=%s)", app_id, ok)
+            if ok:
+                paused.append(app_id)
+        else:
+            log.debug("pause_media: '%s' laeuft nicht (%s) - nichts zu pausieren", app_id, status.name)
+    return paused
+
+
+async def _resume_sessions_async(app_ids):
+    manager = await _MediaManager.request_async()
+    for session in manager.get_sessions():
+        app_id = session.source_app_user_model_id
+        if app_id not in app_ids:
+            continue
+        status = _PlaybackStatus(session.get_playback_info().playback_status)
+        if status == _PlaybackStatus.PAUSED:
+            ok = await session.try_play_async()
+            log.info("resume_media: '%s' fortgesetzt (ok=%s)", app_id, ok)
+        else:
+            log.info("resume_media: '%s' ist nicht mehr pausiert (%s) - nichts zu tun", app_id, status.name)
+
+
+def pause_media():
+    """Pausiert gezielt nur, was gerade WIRKLICH spielt (Chrome/YouTube,
+    Spotify, ...) und merkt sich, was pausiert wurde. Die globale
+    Play/Pause-Medientaste ist dafuer ungeeignet: sie ist ein blindes
+    Umschalten (startet ein bereits pausiertes Video sogar) und landet bei
+    mehreren Mediaplayern (z.B. zusaetzlich Apple Music) leicht beim
+    falschen."""
+    already_paused = list(state.get("paused_media") or [])
+    if not config.get("pause_media", True):
+        return
+    if not HAVE_MEDIA_SESSIONS:
+        log.warning("pause_media: Windows-Mediasessions nicht verfuegbar - nutze Medientaste als Notloesung")
         try:
             keyboard.send("play/pause media")
         except Exception:
-            pass
+            log.exception("pause_media: Medientaste fehlgeschlagen")
+        return
+    try:
+        newly_paused = asyncio.run(_pause_playing_sessions_async())
+        # Bei erneutem Verstecken (gemischter Zustand) nicht vergessen, was
+        # schon vorher von WinVanish pausiert wurde.
+        state["paused_media"] = already_paused + [a for a in newly_paused if a not in already_paused]
+        _verify_paused_or_fallback(newly_paused)
+    except Exception:
+        log.exception("pause_media: Pausieren fehlgeschlagen")
+
+
+def _audio_peak_for_apps(app_ids, seconds=0.6):
+    """Hoechster Audio-Pegel (0..1) der Audio-Sessions, deren Prozessname zu
+    den angegebenen Mediaplayern passt (z.B. 'Chrome' -> chrome.exe)."""
+    from pycaw.pycaw import IAudioMeterInformation
+    needles = [a.lower().replace(".exe", "") for a in app_ids]
+    best = 0.0
+    end = time.time() + seconds
+    while time.time() < end:
+        for s in AudioUtilities.GetAllSessions():
+            try:
+                if not s.Process:
+                    continue
+                name = s.Process.name().lower()
+                if any(n in name or name.replace(".exe", "") in n for n in needles):
+                    best = max(best, s._ctl.QueryInterface(IAudioMeterInformation).GetPeakValue())
+            except Exception:
+                continue
+        time.sleep(0.05)
+    return best
+
+
+def _verify_paused_or_fallback(app_ids):
+    """try_pause_async() meldet 'ok', auch wenn der Player die Pause
+    ignoriert. Deshalb wird nachgemessen: ist der Player nach kurzer Zeit
+    immer noch hoerbar, wird die Medientaste als zweiter Versuch gesendet
+    und das Ergebnis protokolliert (damit man im Log sieht, was wirklich
+    passiert ist)."""
+    if not app_ids:
+        return
+    time.sleep(0.4)
+    peak = _audio_peak_for_apps(app_ids)
+    if peak <= 0.02:
+        log.info("pause_media: Pause bestaetigt (Pegel %.3f)", peak)
+        return
+    log.warning("pause_media: %s meldet 'pausiert', ist aber noch hoerbar (Pegel %.3f) - sende Medientaste", app_ids, peak)
+    try:
+        keyboard.send("play/pause media")
+    except Exception:
+        log.exception("pause_media: Medientaste fehlgeschlagen")
+        return
+    time.sleep(0.4)
+    peak2 = _audio_peak_for_apps(app_ids)
+    if peak2 <= 0.02:
+        state["paused_via_key"] = True
+        log.info("pause_media: Medientaste hat geholfen (Pegel %.3f)", peak2)
+    else:
+        log.warning("pause_media: auch die Medientaste hat nichts bewirkt (Pegel %.3f) - Ton wird nur stummgeschaltet", peak2)
+
+
+def resume_media():
+    """Setzt nur fort, was WinVanish selbst pausiert hat."""
+    app_ids = state.get("paused_media") or []
+    via_key = state.get("paused_via_key", False)
+    state["paused_media"] = []
+    state["paused_via_key"] = False
+    if not app_ids or not HAVE_MEDIA_SESSIONS or not config.get("pause_media", True):
+        return
+    try:
+        asyncio.run(_resume_sessions_async(app_ids))
+        if via_key:
+            time.sleep(0.4)
+            if _audio_peak_for_apps(app_ids) <= 0.02:
+                log.info("resume_media: per Medientaste pausiert - sende sie erneut zum Fortsetzen")
+                keyboard.send("play/pause media")
+    except Exception:
+        log.exception("resume_media: Fortsetzen fehlgeschlagen")
 
 
 # ----------------------- Kernlogik -----------------------
@@ -448,8 +577,7 @@ def toggle_panic():
                     )
                     restore_window((hwnd, False, None))
             mute(False)
-            if state["hidden"] or remembered:
-                send_media_play_pause()
+            resume_media()
             state["hidden"] = []
             state["active"] = False
         else:
@@ -459,7 +587,7 @@ def toggle_panic():
                 if entry:
                     hidden.append(entry)
             if hidden:
-                send_media_play_pause()
+                pause_media()
             mute(True)
             state["hidden"] = hidden
             state["active"] = True
