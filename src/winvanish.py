@@ -369,9 +369,14 @@ def send_media_play_pause():
 
 def _current_target_hwnds():
     """Sucht die aktuellen Fenster-Handles aller konfigurierten Ziele frisch
-    (nicht aus einem alten Zwischenspeicher) und startet fehlende
-    Ziel-Programme bei Bedarf. Ohne konfigurierte Ziele: aktuell aktives
-    Fenster als Fallback."""
+    (nicht aus einem alten Zwischenspeicher). Ohne konfigurierte Ziele:
+    aktuell aktives Fenster als Fallback.
+
+    Ziele ohne offenes Fenster werden bewusst NUR uebersprungen, niemals
+    gestartet: ein Tastendruck darf nichts oeffnen. Sonst wuerde z.B. ein
+    gerade geschlossenes Civ 5 bei jedem Druck Steam und das Spiel neu
+    starten, nur weil Chrome umgeschaltet werden sollte. Programme beim
+    WinVanish-Start mitzustarten ist Sache der Option 'auto_launch' (main())."""
     targets = config.get("targets") or []
     hwnds = []
     if targets:
@@ -381,12 +386,7 @@ def _current_target_hwnds():
                 continue
             found = find_windows_for_exe(exe)
             if not found:
-                # Programm laeuft nicht (oder kein sichtbares Fenster) -> starten
-                log.info("_current_target_hwnds: kein Fenster fuer '%s' gefunden - versuche Start", exe)
-                try:
-                    subprocess.Popen([exe])
-                except Exception as e:
-                    log.error("_current_target_hwnds: Start von '%s' fehlgeschlagen: %s", exe, e)
+                log.info("_current_target_hwnds: kein Fenster fuer '%s' - uebersprungen (wird nicht gestartet)", exe)
                 continue
             hwnds.extend(found)
     else:

@@ -36,7 +36,7 @@ reagiert auf eine einzige, selbst gewählte Taste (Standard: `F8`).
 | ↩️ **Perfekt rückgängig & immer synchron** | Jedes Fenster kehrt exakt in seinen vorherigen Zustand zurück (maximiert bleibt maximiert). WinVanish prüft dafür bei jedem Tastendruck den echten Fensterzustand – kein Fenster bleibt je "hängen". |
 | 🌗 **Adaptives Icon** | Das Tray-Icon erkennt live, ob Windows im hellen oder dunklen Design läuft, und wechselt automatisch – ganz ohne Neustart. |
 | ⌨️ **Frei wählbare Taste** | Einzelne Taste oder Kombination (`Strg+Shift+M`, `F9`, `Druck`, …) – vom Tray-Menü aus in Sekunden eingerichtet. |
-| 🚀 **Autostart** | Optional startet WinVanish selbst automatisch mit Windows – und/oder deine Zielprogramme starten automatisch mit, falls sie gerade nicht laufen. |
+| 🚀 **Autostart** | Optional startet WinVanish selbst automatisch mit Windows – und/oder (separate Option) deine Zielprogramme werden beim WinVanish-Start mitgestartet. Ein **Tastendruck startet nie etwas**: ist ein Ziel gerade nicht offen, wird es einfach übersprungen. |
 | 🪶 **Leichtgewichtig** | Eine einzelne, in sich geschlossene `.exe` (Icons sind eingebettet) – keine losen Dateien, keine Hintergrunddienste außer dem Tray-Icon selbst. |
 
 ## 📸 Screenshots
