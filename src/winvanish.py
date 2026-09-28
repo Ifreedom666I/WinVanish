@@ -222,7 +222,18 @@ def minimize_window(hwnd):
     # entfernen. Nur bei "normalen" Fenstern - siehe Docstring oben.
     # Windows aktualisiert die Taskleiste dafuer nur zuverlaessig, wenn das
     # Fenster kurz komplett versteckt und danach neu gezeigt wird.
-    if original_exstyle is not None and not needed_force_minimize:
+    # Nur bei normalen Fenstern mit Titelleiste (Browser, Editoren, ...).
+    # Spiele (randlos/Vollbild, ohne WS_CAPTION) bleiben beim reinen, sicheren
+    # Minimieren - der Trick machte z.B. Fallout 4 nach dem Verstecken
+    # unauffindbar/unsichtbar.
+    try:
+        has_caption = (win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE) & win32con.WS_CAPTION) == win32con.WS_CAPTION
+    except Exception:
+        has_caption = False
+    if not has_caption and not needed_force_minimize:
+        log.info("minimize_window: '%s' hat keine Titelleiste (Spiel/Vollbild) - Taskleisten-Trick uebersprungen", title)
+        original_exstyle = None
+    elif original_exstyle is not None and not needed_force_minimize:
         try:
             win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
             new_exstyle = (original_exstyle | win32con.WS_EX_TOOLWINDOW) & ~win32con.WS_EX_APPWINDOW
@@ -257,6 +268,11 @@ def restore_window(hidden_entry):
             log.warning("restore_window: Taskleisten-Stil zuruecksetzen fehlgeschlagen fuer '%s': %s", title, e)
     win32gui.ShowWindow(hwnd, win32con.SW_SHOWMAXIMIZED if was_maximized else win32con.SW_RESTORE)
     try:
+        # Windows verweigert SetForegroundWindow, wenn der Aufruf nicht von
+        # einer Eingabe stammt ("Zugriff verweigert"). Ein kurzer Alt-Tastendruck
+        # zaehlt als Eingabe und hebt die Sperre auf.
+        win32api.keybd_event(win32con.VK_MENU, 0, 0, 0)
+        win32api.keybd_event(win32con.VK_MENU, 0, win32con.KEYEVENTF_KEYUP, 0)
         win32gui.SetForegroundWindow(hwnd)
     except Exception as e:
         log.warning("restore_window: SetForegroundWindow fehlgeschlagen fuer '%s': %s", title, e)
@@ -300,7 +316,15 @@ def find_windows_for_exe(target_exe):
     matches = []
 
     def enum_handler(hwnd, _):
-        if not win32gui.IsWindowVisible(hwnd) or not win32gui.GetWindowText(hwnd):
+        if not win32gui.GetWindowText(hwnd):
+            return
+        # Auch minimierte Fenster zaehlen, selbst wenn Windows sie nicht mehr
+        # als "sichtbar" meldet: Spiele wie Fallout 4 liefern nach dem
+        # Verstecken IsWindowVisible()==False, waeren so nie wieder
+        # auffindbar und blieben fuer immer weg.
+        if not (win32gui.IsWindowVisible(hwnd) or win32gui.IsIconic(hwnd)):
+            return
+        if win32gui.GetWindow(hwnd, win32con.GW_OWNER):
             return
         try:
             exe = get_exe_of_window(hwnd)
