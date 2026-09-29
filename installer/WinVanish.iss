@@ -2,7 +2,7 @@
 ; by Kotsch.Tech - https://kotsch.tech
 
 #define MyAppName "WinVanish"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.2.0"
 #define MyAppPublisher "Kotsch.Tech"
 #define MyAppURL "https://kotsch.tech"
 #define MyAppExeName "WinVanish.exe"

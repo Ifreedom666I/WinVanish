@@ -686,11 +686,11 @@ _last_toggle_end = 0.0
 
 
 def on_hotkey():
-    """Hotkey-Callback. Laeuft im Tastatur-Hook-Thread und darf deshalb NICHT
-    selbst arbeiten: toggle_panic() sendet Tastendruecke (Alt, Medientaste)
-    und wartet auf Fenster - im Hook-Thread blockiert das den Hook, Windows
-    verzoegert die ganze Tastatur und wirft den Hook nach einem Timeout sogar
-    lautlos raus (Taste 'geht dann nicht mehr'). Darum: eigener Thread."""
+    """Hotkey-Callback. Laeuft im Fenster-Nachrichten-Thread der Hotkey-Message-
+    Loop und darf deshalb NICHT selbst arbeiten: toggle_panic() sendet
+    Tastendruecke (Alt, Medientaste) und wartet auf Fenster - das wuerde die
+    Message-Loop blockieren und weitere WM_HOTKEY-Nachrichten verzoegern.
+    Darum: eigener Thread."""
     threading.Thread(target=_toggle_worker, daemon=True).start()
 
 
@@ -709,32 +709,201 @@ def _toggle_worker():
         _toggle_lock.release()
 
 
-def register_hotkey(key):
-    if state["hotkey_handle"] is not None:
-        try:
-            keyboard.remove_hotkey(state["hotkey_handle"])
-        except (KeyError, ValueError):
-            pass
-        state["hotkey_handle"] = None
+# ----------------------- Globaler Hotkey (native Windows-API) -----------------------
+#
+# Die 'keyboard'-Bibliothek installiert einen globalen Low-Level-Tastatur-Hook
+# (WH_KEYBOARD_LL). Das erwies sich in der Praxis als unzuverlaessig: der Hook
+# kann von Windows STILLSCHWEIGEND wieder entfernt/uebergangen werden (kein
+# Fehler, keine Exception) - die Taste "geht dann einfach nicht mehr", auch
+# direkt nach einem frischen Programmstart. Deshalb nutzt WinVanish stattdessen
+# die dafuer vorgesehene WinAPI RegisterHotKey()/WM_HOTKEY - der Standardweg,
+# ueber den z.B. auch der Windows Explorer selbst globale Tastenkombinationen
+# entgegennimmt, und der nicht auf einem systemweiten Hook beruht, der
+# "verloren gehen" kann.
+
+WM_HOTKEY = 0x0312
+MOD_ALT = 0x0001
+MOD_CONTROL = 0x0002
+MOD_SHIFT = 0x0004
+MOD_WIN = 0x0008
+MOD_NOREPEAT = 0x4000  # ein Tastendruck = genau EIN WM_HOTKEY, auch bei Tastenwiederholung
+
+_NAMED_VK = {
+    "space": 0x20, "leertaste": 0x20,
+    "tab": 0x09,
+    "enter": 0x0D, "return": 0x0D,
+    "esc": 0x1B, "escape": 0x1B,
+    "backspace": 0x08,
+    "delete": 0x2E, "del": 0x2E, "entf": 0x2E,
+    "insert": 0x2D, "einfg": 0x2D,
+    "home": 0x24, "pos1": 0x24,
+    "end": 0x23, "ende": 0x23,
+    "page up": 0x21, "pageup": 0x21, "bild auf": 0x21,
+    "page down": 0x22, "pagedown": 0x22, "bild ab": 0x22,
+    "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
+    "caps lock": 0x14, "capslock": 0x14, "feststelltaste": 0x14,
+    "num lock": 0x90, "numlock": 0x90,
+    "scroll lock": 0x91, "scrolllock": 0x91, "rollen": 0x91,
+    "pause": 0x13,
+    "print screen": 0x2C, "printscreen": 0x2C, "druck": 0x2C,
+    "windows": 0x5B, "win": 0x5B, "cmd": 0x5B,
+    "menu": 0x5D, "apps": 0x5D,
+    "plus": 0xBB, "add": 0x6B,
+    "minus": 0xBD, "subtract": 0x6D,
+    "multiply": 0x6A, "divide": 0x6F, "decimal": 0x6E,
+    "comma": 0xBC, "komma": 0xBC,
+    "period": 0xBE, "punkt": 0xBE,
+}
+for _i in range(1, 25):
+    _NAMED_VK[f"f{_i}"] = 0x6F + _i
+for _i in range(10):
+    _NAMED_VK[f"numpad{_i}"] = 0x60 + _i
+
+
+def parse_hotkey(spec):
+    """Wandelt eine Tastenangabe im 'keyboard'-Format ('plus', 'f8',
+    'ctrl+shift+m', ...) in (Modifiers, [VK-Codes]) fuer RegisterHotKey um.
+    Bei mehrdeutigen Tasten wie 'plus' (Haupttastatur-Plus ODER Numpad-Plus)
+    werden mehrere VK-Kandidaten zurueckgegeben - alle werden registriert,
+    damit es keine Rolle spielt, welche der beiden physischen Tasten es ist."""
+    spec = (spec or "").lower().strip()
+    parts = [p.strip() for p in spec.split("+") if p.strip()]
+    mods = MOD_NOREPEAT
+    main = None
+    for p in parts:
+        if p in ("ctrl", "strg", "control"):
+            mods |= MOD_CONTROL
+        elif p in ("shift", "umschalt"):
+            mods |= MOD_SHIFT
+        elif p == "alt":
+            mods |= MOD_ALT
+        elif p in ("win", "windows", "cmd", "meta"):
+            mods |= MOD_WIN
+        else:
+            main = p
+    if not main:
+        return mods, []
+
+    vks = []
+    if main in _NAMED_VK:
+        vks.append(_NAMED_VK[main])
+    if len(main) == 1:
+        res = win32api.VkKeyScan(main)
+        if res != -1:
+            vk = res & 0xFF
+            if vk not in vks:
+                vks.append(vk)
+    # Zusaetzliche Kandidaten fuer mehrdeutige Tasten (Haupttastatur/Numpad).
+    for extra_name, extra_vk in (("plus", 0x6B), ("minus", 0x6D)):
+        if main == extra_name and extra_vk not in vks:
+            vks.append(extra_vk)
+    return mods, vks
+
+
+_HOTKEY_WNDCLASS = "WinVanishHotkeyWnd"
+_hotkey_hwnd = None
+_hotkey_hwnd_ready = threading.Event()
+_registered_hotkey_ids = []
+
+
+WM_APP_SET_HOTKEY = win32con.WM_APP + 1
+_pending_hotkey_key = None
+
+
+def _hotkey_wndproc(hwnd, msg, wparam, lparam):
+    if msg == WM_HOTKEY:
+        on_hotkey()
+        return 0
+    if msg == WM_APP_SET_HOTKEY:
+        # RegisterHotKey/UnregisterHotKey MUESSEN vom Thread aufgerufen werden,
+        # der dieses Fenster erstellt hat (sonst: "Unzulaessiges Fenster,
+        # gehoert einem anderen Thread"). Andere Threads (main(), Tray-Menue,
+        # Watchdog) koennen deshalb nicht direkt registrieren - sie schicken
+        # stattdessen diese Nachricht, die hier, im richtigen Thread, landet.
+        _do_register_hotkey(_pending_hotkey_key)
+        return 0
+    return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
+
+
+def _create_hotkey_window():
+    wc = win32gui.WNDCLASS()
+    wc.lpfnWndProc = _hotkey_wndproc
+    wc.lpszClassName = _HOTKEY_WNDCLASS
+    wc.hInstance = win32api.GetModuleHandle(None)
     try:
-        # trigger_on_release: genau EIN Ausloesen pro Tastendruck, auch wenn die
-        # Taste etwas laenger gehalten wird (Tasten-Wiederholung wuerde sonst
-        # dutzende Male hintereinander umschalten = Flackern).
-        state["hotkey_handle"] = keyboard.add_hotkey(key, on_hotkey, trigger_on_release=True)
-        log.debug("register_hotkey: Taste '%s' erfolgreich registriert", key)
+        win32gui.RegisterClass(wc)
     except Exception:
-        log.exception("register_hotkey: Registrieren der Taste '%s' fehlgeschlagen", key)
+        pass  # bereits registriert (z.B. bei erneutem Aufruf) - unproblematisch
+    return win32gui.CreateWindow(
+        _HOTKEY_WNDCLASS, "WinVanish Hotkey", 0, 0, 0, 0, 0, 0, 0,
+        wc.hInstance, None,
+    )
+
+
+def register_hotkey(key):
+    """Von JEDEM Thread aufrufbar: stoesst die eigentliche (Un-)Registrierung
+    im Hotkey-Fenster-Thread an (siehe _hotkey_wndproc/WM_APP_SET_HOTKEY)."""
+    global _pending_hotkey_key
+    if not _hotkey_hwnd_ready.wait(timeout=5):
+        log.error("register_hotkey: Hotkey-Fenster wurde nicht rechtzeitig erstellt")
+        return
+    _pending_hotkey_key = key
+    win32gui.PostMessage(_hotkey_hwnd, WM_APP_SET_HOTKEY, 0, 0)
+
+
+def _do_register_hotkey(key):
+    """Laeuft NUR im Hotkey-Fenster-Thread (siehe register_hotkey oben)."""
+    global _registered_hotkey_ids
+    for hid in _registered_hotkey_ids:
+        try:
+            win32gui.UnregisterHotKey(_hotkey_hwnd, hid)
+        except Exception:
+            pass
+    _registered_hotkey_ids = []
+
+    mods, vks = parse_hotkey(key)
+    if not vks:
+        log.error("register_hotkey: Taste '%s' konnte nicht in einen Tastencode uebersetzt werden", key)
+        return
+
+    for i, vk in enumerate(vks):
+        hid = 1 + i
+        try:
+            win32gui.RegisterHotKey(_hotkey_hwnd, hid, mods, vk)
+            _registered_hotkey_ids.append(hid)
+        except Exception as e:
+            log.warning("register_hotkey: VK 0x%02X fuer '%s' konnte nicht registriert werden: %s", vk, key, e)
+
+    if _registered_hotkey_ids:
+        state["hotkey_handle"] = True
+        log.info("register_hotkey: Taste '%s' registriert (%d Variante(n))", key, len(_registered_hotkey_ids))
+    else:
+        state["hotkey_handle"] = None
+        log.error("register_hotkey: KEINE Variante von '%s' konnte registriert werden (evtl. von anderem Programm belegt)", key)
+
+
+def _hotkey_message_loop():
+    """Erstellt das Hotkey-Fenster und pumpt seine Nachrichten - MUSS im
+    selben Thread laufen wie CreateWindow, da Fenster-Nachrichtenwarteschlangen
+    an den erstellenden Thread gebunden sind (sonst kaeme nie ein WM_HOTKEY
+    an, egal wie oft RegisterHotKey erfolgreich meldet). Laeuft unabhaengig
+    von pystrays eigener Tray-Icon-Nachrichtenschleife."""
+    global _hotkey_hwnd
+    while True:
+        try:
+            _hotkey_hwnd = _create_hotkey_window()
+            _hotkey_hwnd_ready.set()
+            win32gui.PumpMessages()
+        except Exception:
+            log.exception("_hotkey_message_loop: unerwartet beendet, starte neu")
+            _hotkey_hwnd_ready.clear()
+            time.sleep(1)
 
 
 def _hotkey_watchdog():
-    """Die 'keyboard'-Bibliothek installiert einmalig einen globalen
-    Low-Level-Tastatur-Hook. Windows kann so einen Hook unter bestimmten
-    Umstaenden (z.B. wenn eine andere Anwendung/ein anderer Hook im System
-    kurz haengt) STILLSCHWEIGEND wieder entfernen - die App merkt selbst
-    nichts davon, die Taste 'geht dann einfach nicht mehr', ohne jeden
-    Fehler im Log. Deshalb wird die Taste hier regelmaessig unauffaellig
-    neu registriert (guenstige Operation), damit ein verlorener Hook
-    automatisch repariert wird, statt dass ein Neustart noetig ist."""
+    """Zusaetzliche Absicherung: die Registrierung regelmaessig auffrischen,
+    falls sie durch ein anderes Programm (das kurzzeitig dieselbe Taste
+    belegt hat) verdraengt wurde."""
     while True:
         time.sleep(HOTKEY_WATCHDOG_SECONDS)
         try:
@@ -1043,6 +1212,7 @@ def ensure_single_instance():
 def main():
     ensure_single_instance()
     try:
+        threading.Thread(target=_hotkey_message_loop, daemon=True).start()
         register_hotkey(config["toggle"])
         log.info("Taste '%s' registriert (wird alle %ds automatisch erneuert)", config["toggle"], HOTKEY_WATCHDOG_SECONDS)
         threading.Thread(target=_hotkey_watchdog, daemon=True).start()
