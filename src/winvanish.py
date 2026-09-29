@@ -272,19 +272,36 @@ def restore_window(hidden_entry):
         log.warning("restore_window: hwnd %s existiert nicht mehr (Programm evtl. beendet) - ueberspringe", hwnd)
         return
     title = win32gui.GetWindowText(hwnd)
+
+    # original_exstyle ist NUR bei "normalen" Fenstern gesetzt (mit Titelleiste,
+    # die den Taskleisten-Trick bekommen haben - siehe minimize_window).
+    # Captionless-Fenster (Spiele/Vollbild) werden bewusst NUR mit einem
+    # einzelnen, einfachen ShowWindow(SW_RESTORE) behandelt: mehrere
+    # ShowWindow/SetWindowPos-Aufrufe hintereinander koennen ein DX9-
+    # Exclusive-Vollbild-Fenster destabilisieren - ein realer Fall dabei war
+    # sogar ein kompletter Absturz des Spiels. Lieber ein Fenster, das an der
+    # falschen Position/dem falschen Monitor landet, als eins, das abstuerzt.
+    if original_exstyle is None:
+        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        try:
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception as e:
+            log.warning("restore_window: SetForegroundWindow fehlgeschlagen fuer '%s': %s", title, e)
+        log.info("restore_window: '%s' (hwnd %s) wiederhergestellt (Spiel/Vollbild - minimale Behandlung)", title, hwnd)
+        return
+
     # Erst den urspruenglichen Taskleisten-Stil zuruecksetzen (Fenster bleibt
     # dabei unsichtbar/minimiert), dann normal wiederherstellen - sonst taucht
     # der Taskleisten-Button teils verzoegert oder gar nicht wieder auf.
-    if original_exstyle is not None:
-        try:
-            win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
-            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, original_exstyle)
-        except Exception as e:
-            log.warning("restore_window: Taskleisten-Stil zuruecksetzen fehlgeschlagen fuer '%s': %s", title, e)
+    try:
+        win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
+        win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, original_exstyle)
+    except Exception as e:
+        log.warning("restore_window: Taskleisten-Stil zuruecksetzen fehlgeschlagen fuer '%s': %s", title, e)
     # Zuerst normal wiederherstellen, dann exakt an die gemerkte Position
     # (und damit auf den gemerkten MONITOR) schieben. Nur SW_RESTORE zu
     # nutzen setzt das Fenster dorthin, wo Windows es zuletzt "normal"
-    # platziert hatte - bei Spielen/Mehrmonitor-Setups oft der falsche Bildschirm.
+    # platziert hatte - bei Mehrmonitor-Setups oft der falsche Bildschirm.
     win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
     if rect and rect[2] - rect[0] > 0 and rect[3] - rect[1] > 0 and rect[0] > -30000:
         try:
@@ -306,10 +323,11 @@ def restore_window(hidden_entry):
     except Exception as e:
         log.warning("restore_window: SetForegroundWindow fehlgeschlagen fuer '%s': %s", title, e)
 
-    # Selbstheilung: manche Fenster (v.a. altes DX9-Vollbild) bleiben trotz
-    # "erfolgreichem" ShowWindow auf der internen Minimiert-Position
-    # (-32000,-32000) haengen und sind dadurch unsichtbar. Falls das passiert,
-    # aktiv auf den sichtbaren Bereich zurueckschieben.
+    # Selbstheilung nur fuer diese normalen Fenster (bei denen mehrere
+    # ShowWindow-Aufrufe erwiesenermassen unproblematisch sind): manche
+    # bleiben trotz "erfolgreichem" ShowWindow auf der internen
+    # Minimiert-Position (-32000,-32000) haengen. Falls das passiert, aktiv
+    # auf den sichtbaren Bereich zurueckschieben.
     time.sleep(0.15)
     if _is_stuck_offscreen(hwnd):
         log.warning("restore_window: '%s' haengt auf (-32000,-32000) fest - erzwinge Position zurueck", title)
