@@ -2,7 +2,7 @@
 ; by Kotsch.Tech - https://kotsch.tech
 
 #define MyAppName "WinVanish"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "Kotsch.Tech"
 #define MyAppURL "https://kotsch.tech"
 #define MyAppExeName "WinVanish.exe"
@@ -35,6 +35,12 @@ VersionInfoVersion={#MyAppVersion}
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppName} Setup
 VersionInfoCopyright=(c) Kotsch.Tech - {#MyAppURL}
+; Eine laufende WinVanish.exe (z.B. aus einer aelteren Installation) wird vor dem
+; Ueberschreiben automatisch beendet und danach wieder gestartet. Ohne das kann
+; eine alte, laengst gefixte Version unbemerkt im Hintergrund weiterlaufen, obwohl
+; "neu installiert" wurde - genau das ist hier einmal passiert.
+CloseApplications=force
+RestartApplications=yes
 
 [Languages]
 Name: "german"; MessagesFile: "compiler:Languages\German.isl"
@@ -64,5 +70,26 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
+[UninstallRun]
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM WinVanish.exe /T"; Flags: runhidden skipifdoesntexist; RunOnceId: "KillWinVanish"
+
 [UninstallDelete]
 Type: files; Name: "{app}\config.json"
+
+[Code]
+procedure KillRunningWinVanish;
+var
+  ResultCode: Integer;
+begin
+  // Zusaetzliche Absicherung neben CloseApplications=force: eine laufende
+  // WinVanish.exe (egal aus welcher Installation) IMMER beenden, bevor
+  // Dateien kopiert werden - sonst kann eine alte Version unbemerkt
+  // weiterlaufen und auf Tastendruecke reagieren, obwohl "aktualisiert" wurde.
+  Exec('taskkill.exe', '/F /IM WinVanish.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+function InitializeSetup(): Boolean;
+begin
+  KillRunningWinVanish;
+  Result := True;
+end;
