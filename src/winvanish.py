@@ -105,6 +105,9 @@ DEFAULT_CONFIG = {
 # Wie lange nach ShowWindow(MINIMIZE) gewartet wird, bevor geprueft wird, ob ein
 # (v.a. Vollbild-)Fenster wirklich weg ist. Vermeidet Race-Conditions bei Spielen.
 MINIMIZE_SETTLE_SECONDS = 0.05
+# Wie oft die Hotkey-Registrierung erneuert wird (Selbstheilung, siehe
+# _hotkey_watchdog) - kurz genug, dass ein verlorener Hook schnell wieder da ist.
+HOTKEY_WATCHDOG_SECONDS = 20
 # ----------------------------------------------------------------------
 
 state = {
@@ -718,9 +721,26 @@ def register_hotkey(key):
         # Taste etwas laenger gehalten wird (Tasten-Wiederholung wuerde sonst
         # dutzende Male hintereinander umschalten = Flackern).
         state["hotkey_handle"] = keyboard.add_hotkey(key, on_hotkey, trigger_on_release=True)
-        log.info("register_hotkey: Taste '%s' erfolgreich registriert", key)
+        log.debug("register_hotkey: Taste '%s' erfolgreich registriert", key)
     except Exception:
         log.exception("register_hotkey: Registrieren der Taste '%s' fehlgeschlagen", key)
+
+
+def _hotkey_watchdog():
+    """Die 'keyboard'-Bibliothek installiert einmalig einen globalen
+    Low-Level-Tastatur-Hook. Windows kann so einen Hook unter bestimmten
+    Umstaenden (z.B. wenn eine andere Anwendung/ein anderer Hook im System
+    kurz haengt) STILLSCHWEIGEND wieder entfernen - die App merkt selbst
+    nichts davon, die Taste 'geht dann einfach nicht mehr', ohne jeden
+    Fehler im Log. Deshalb wird die Taste hier regelmaessig unauffaellig
+    neu registriert (guenstige Operation), damit ein verlorener Hook
+    automatisch repariert wird, statt dass ein Neustart noetig ist."""
+    while True:
+        time.sleep(HOTKEY_WATCHDOG_SECONDS)
+        try:
+            register_hotkey(config["toggle"])
+        except Exception:
+            log.exception("_hotkey_watchdog: erneutes Registrieren fehlgeschlagen")
 
 
 # ----------------------- Tray-Icon (hell/dunkel je nach Windows-Design) -----------------------
@@ -1024,6 +1044,8 @@ def main():
     ensure_single_instance()
     try:
         register_hotkey(config["toggle"])
+        log.info("Taste '%s' registriert (wird alle %ds automatisch erneuert)", config["toggle"], HOTKEY_WATCHDOG_SECONDS)
+        threading.Thread(target=_hotkey_watchdog, daemon=True).start()
         if config.get("auto_launch"):
             for t in config.get("targets") or []:
                 exe = t.get("exe")
