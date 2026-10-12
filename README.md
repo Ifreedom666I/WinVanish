@@ -68,6 +68,12 @@ unter [Selbst bauen](#️-selbst-bauen).
 
 1. Installer bzw. `WinVanish.exe` von [kotsch.tech](https://kotsch.tech) herunterladen
 2. Ausführen – die App läuft unsichtbar im Hintergrund, ein Icon erscheint im System-Tray
+
+**Update:** Den neuen Installer einfach **über** eine vorhandene Version installieren. Eine laufende
+WinVanish-Version wird dabei automatisch beendet und danach neu gestartet, Reste älterer Versionen
+werden aufgeräumt, deine Einstellungen (`config.json`: Taste und Ziele) bleiben erhalten. Das
+funktioniert auch, wenn WinVanish vorher nur halb deinstalliert wurde. Stille Installation:
+`WinVanish-Setup.exe /VERYSILENT`. Welche Version läuft, steht im Tray-Tooltip und in `winvanish.log`.
 3. Fertig: Tray-Icon rechtsklicken, um Taste und Ziel-Programme einzurichten
 
 > **Windows SmartScreen / Defender:** Als kleines, frisch veröffentlichtes Tool hat WinVanish noch

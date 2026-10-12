@@ -40,6 +40,10 @@ from PIL import Image, ImageDraw
 import pystray
 
 WEBSITE = "https://kotsch.tech"
+# Muss mit installer/WinVanish.iss (MyAppVersion) und installer/version_info.txt uebereinstimmen.
+# Steht im Log und im Tray-Tooltip, damit man sofort sieht, WELCHE Version laeuft
+# (eine alte, unbemerkt weiterlaufende Version war schon einmal die Fehlerursache).
+APP_VERSION = "1.3.0"
 
 # ----------------------------------------------------------------------
 if getattr(sys, "frozen", False):
@@ -94,7 +98,7 @@ def log_unhandled_thread_exception(args):
 threading.excepthook = log_unhandled_thread_exception
 
 log.info("=" * 60)
-log.info("WinVanish gestartet (BASE_DIR=%s)", BASE_DIR)
+log.info("WinVanish %s gestartet (BASE_DIR=%s)", APP_VERSION, BASE_DIR)
 DEFAULT_CONFIG = {
     "toggle": "f8",
     # Liste von Ziel-Programmen: [{"exe": "C:\\...\\civ5.exe", "title": "Civilization V"}, ...]
@@ -182,6 +186,23 @@ def _is_stuck_offscreen(hwnd):
         return False
 
 
+def _normal_exstyle(hwnd, exstyle):
+    """Gibt den Fenster-Erweiterungsstil zurueck, wie er OHNE eine fruehere
+    WinVanish-Verstecken-Aktion waere. Ein normales Fenster mit Titelleiste, das
+    noch WS_EX_TOOLWINDOW traegt, wurde in einer frueheren Sitzung (z.B. vor einem
+    WinVanish-Neustart) aus der Taskleiste genommen und nie zurueckgeholt. Wuerde
+    man diesen Stil als "Original" merken, bliebe der Taskleisten-Button dauerhaft
+    weg, selbst nach dem Wiederherstellen."""
+    try:
+        style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
+    except Exception:
+        return exstyle
+    has_caption = (style & win32con.WS_CAPTION) == win32con.WS_CAPTION
+    if has_caption and (exstyle & win32con.WS_EX_TOOLWINDOW):
+        return (exstyle & ~win32con.WS_EX_TOOLWINDOW) | win32con.WS_EX_APPWINDOW
+    return exstyle
+
+
 def minimize_window(hwnd):
     """Minimiert ein Fenster robust - auch Vollbild-Spiele (Alt+Tab-Verhalten).
     Merkt sich vorher, ob es maximiert war, damit restore_window es korrekt
@@ -201,7 +222,7 @@ def minimize_window(hwnd):
     title = win32gui.GetWindowText(hwnd)
     rect, was_maximized = _capture_geometry(hwnd)
     try:
-        original_exstyle = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+        original_exstyle = _normal_exstyle(hwnd, win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE))
     except Exception as e:
         original_exstyle = None
         log.warning("minimize_window: GetWindowLong fehlgeschlagen fuer '%s': %s", title, e)
@@ -650,7 +671,15 @@ def toggle_panic():
                         "- stelle bestmoeglich wieder her", hwnd,
                     )
                     rect, was_max = _capture_geometry(hwnd)
-                    restore_window((hwnd, was_max, None, rect))
+                    # Hatte eine fruehere WinVanish-Sitzung dieses Fenster aus der
+                    # Taskleiste genommen (Stil "Toolfenster"), den normalen Stil
+                    # wieder herstellen - sonst bleibt der Taskleisten-Button weg.
+                    try:
+                        cur = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+                    except Exception:
+                        cur = None
+                    fixed = _normal_exstyle(hwnd, cur) if cur is not None else None
+                    restore_window((hwnd, was_max, fixed if fixed != cur else None, rect))
             mute(False)
             resume_media()
             state["hidden"] = []
@@ -1189,7 +1218,7 @@ def run_tray():
         ic.visible = True
         threading.Thread(target=watch_theme_and_update_icon, args=(ic,), daemon=True).start()
 
-    icon = pystray.Icon("WinVanish", make_icon_image(), "WinVanish by Kotsch.Tech", menu)
+    icon = pystray.Icon("WinVanish", make_icon_image(), f"WinVanish v{APP_VERSION} by Kotsch.Tech", menu)
     icon.run(setup=setup)
 
 

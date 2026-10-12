@@ -10,8 +10,12 @@ gebaut werden (siehe [README](README.md#-selbst-bauen)). Die App:
 - speichert Einstellungen ausschließlich lokal in `config.json`
 - nutzt Standard-Windows-APIs (`ShowWindow`, `SetForegroundWindow`, System-Mute) – nichts
   Ungewöhnliches, nichts, was tiefer als eine normale Desktop-App in dein System eingreift
-- nutzt die `keyboard`-Bibliothek für den globalen Hotkey, weshalb manche Antiviren-Programme
-  bei **jeder** selbst gebauten `.exe` mit Tastatur-Hook einen harmlosen Fehlalarm auslösen können
+- registriert den globalen Hotkey über die Windows-Funktion `RegisterHotKey` (dieselbe, die auch
+  der Explorer nutzt) – es wird **nicht** die gesamte Tastatureingabe mitgelesen
+- nutzt die `keyboard`-Bibliothek nur kurz beim Menüpunkt „Taste ändern“, um die gedrückte Taste
+  zu erkennen, und als Notlösung zum Senden der Medientaste – deshalb können manche
+  Antiviren-Programme bei selbst gebauten `.exe` mit dieser Bibliothek einen harmlosen
+  Fehlalarm auslösen
 
 ## Digitale Signatur – aktueller Stand
 
